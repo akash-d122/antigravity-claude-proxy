@@ -79,6 +79,28 @@ async function ensureInitialized() {
 app.use(cors());
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 
+// Model ID normalization middleware (strips client-side context suffix like [1m] or [10m] and maps logical IDs to working backend IDs)
+app.use((req, res, next) => {
+    if (req.body && typeof req.body.model === 'string') {
+        let model = req.body.model.replace(/\[\w+\]$/, '');
+        
+        // Internal mapping for Gemini logical IDs to actual working backend IDs
+        const INTERNAL_MAPPING = {
+            'gemini-3.5-flash-low': 'gemini-3.5-flash-extra-low',
+            'gemini-3.5-flash-medium': 'gemini-3.5-flash-low',
+            'gemini-3.5-flash-high': 'gemini-3-flash-agent',
+            'gemini-3.1-pro-high': 'gemini-pro-agent'
+        };
+        
+        if (INTERNAL_MAPPING[model]) {
+            model = INTERNAL_MAPPING[model];
+        }
+        
+        req.body.model = model;
+    }
+    next();
+});
+
 // API Key authentication middleware for /v1/* endpoints
 app.use('/v1', (req, res, next) => {
     // Skip validation if apiKey is not configured

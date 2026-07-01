@@ -10,10 +10,14 @@
 
 ## Gemini Models
 
-| Model ID            | Description                     |
-| ------------------- | ------------------------------- |
-| `gemini-3-flash`    | Gemini 3 Flash with thinking    |
-| `gemini-3.1-pro-low`  | Gemini 3.1 Pro Low with thinking  |
-| `gemini-3.1-pro-high` | Gemini 3.1 Pro High with thinking |
+| Model ID                     | Description                              |
+| ---------------------------- | ---------------------------------------- |
+| `gemini-3-flash`             | Gemini 3 Flash with thinking             |
+| `gemini-3.1-pro-low`         | Gemini 3.1 Pro Low with thinking         |
+| `gemini-3.1-pro-high`         | Gemini 3.1 Pro High with thinking        |
+| `gemini-pro-agent`           | Gemini 3.1 Pro High with thinking        |
+| `gemini-3.5-flash-extra-low` | Gemini 3.5 Flash Low with thinking       |
+| `gemini-3.5-flash-low`       | Gemini 3.5 Flash Medium with thinking    |
+| `gemini-3-flash-agent`       | Gemini 3.5 Flash High with thinking      |
 
 Gemini models include full thinking support with `thoughtSignature` handling for multi-turn conversations.

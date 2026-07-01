@@ -440,7 +440,11 @@ document.addEventListener('alpine:init', () => {
                 'gemini-3.1-pro-high',
                 'gemini-3.1-pro-low',
                 'gemini-3-flash',
-                'gemini-3.1-flash-lite'
+                'gemini-3.1-flash-lite',
+                'gemini-3.5-flash-extra-low',
+                'gemini-3.5-flash-low',
+                'gemini-3-flash-agent',
+                'gemini-pro-agent'
             ];
 
             const tiers = ['ultra', 'pro', 'pro', 'free'];

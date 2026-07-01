@@ -49,12 +49,14 @@ cat > ~/.config/opencode/opencode.json <<'EOF'
         "gemini-2.5-flash-lite": { "id": "gemini-2.5-flash-lite", "name": "Gemini 2.5 Flash Lite" },
         "gemini-2.5-flash-thinking": { "id": "gemini-2.5-flash-thinking", "name": "Gemini 2.5 Flash Thinking" },
         "gemini-3-flash": { "id": "gemini-3-flash", "name": "Gemini 3 Flash" },
-        "gemini-3-flash-agent": { "id": "gemini-3-flash-agent", "name": "Gemini 3 Flash Agent" },
-        "gemini-pro-agent": { "id": "gemini-pro-agent", "name": "Gemini 3.1 Pro Agent" },
+        "gemini-3-flash-agent": { "id": "gemini-3-flash-agent", "name": "Gemini 3.5 Flash High" },
+        "gemini-pro-agent": { "id": "gemini-pro-agent", "name": "Gemini 3.1 Pro High" },
         "gemini-3.1-pro-low": { "id": "gemini-3.1-pro-low", "name": "Gemini 3.1 Pro Low" },
+        "gemini-3.1-pro-high": { "id": "gemini-3.1-pro-high", "name": "Gemini 3.1 Pro High" },
         "gemini-3.1-flash-lite": { "id": "gemini-3.1-flash-lite", "name": "Gemini 3.1 Flash Lite" },
         "gemini-3.1-flash-image": { "id": "gemini-3.1-flash-image", "name": "Gemini 3.1 Flash Image" },
-        "gemini-3.5-flash-low": { "id": "gemini-3.5-flash-low", "name": "Gemini 3.5 Flash" }
+        "gemini-3.5-flash-extra-low": { "id": "gemini-3.5-flash-extra-low", "name": "Gemini 3.5 Flash Low" },
+        "gemini-3.5-flash-low": { "id": "gemini-3.5-flash-low", "name": "Gemini 3.5 Flash Medium" }
       }
     }
   },
@@ -101,12 +103,14 @@ Inside OpenCode, all registered models appear as `antigravity/<model-id>`. The `
 | `gemini-2.5-flash-lite` | Gemini | Background tasks |
 | `gemini-2.5-flash-thinking` | Gemini | Reasoning tasks |
 | `gemini-3-flash` | Gemini | Fast, lightweight |
-| `gemini-3-flash-agent` | Gemini | Agentic workflows |
-| `gemini-pro-agent` | Gemini | Agentic workflows |
-| `gemini-3.1-pro-low` | Gemini | Strong reasoning, 1M context |
+| `gemini-3-flash-agent` | Gemini | Gemini 3.5 Flash High |
+| `gemini-pro-agent` | Gemini | Gemini 3.1 Pro High |
+| `gemini-3.1-pro-low` | Gemini | Strong reasoning, 1M context (Low) |
+| `gemini-3.1-pro-high` | Gemini | High reasoning capacity (High) |
 | `gemini-3.1-flash-lite` | Gemini | Lightweight tasks |
 | `gemini-3.1-flash-image` | Gemini | Vision/image tasks |
-| `gemini-3.5-flash-low` | Gemini | Fast tasks, `small_model` recommended |
+| `gemini-3.5-flash-extra-low` | Gemini | Fast tasks, `small_model` recommended (Low) |
+| `gemini-3.5-flash-low` | Gemini | Balanced latency and quality (Medium) |
 
 ## Verify Configuration
 
