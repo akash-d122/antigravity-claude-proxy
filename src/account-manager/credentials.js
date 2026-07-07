@@ -18,6 +18,7 @@ import { logger } from '../utils/logger.js';
 import { isNetworkError, throttledFetch } from '../utils/helpers.js';
 import { onboardUser, getDefaultTierId } from './onboarding.js';
 import { parseTierId } from '../cloudcode/model-api.js';
+import { config } from '../config.js';
 
 // Track accounts currently fetching subscription to avoid duplicate calls
 const subscriptionFetchInProgress = new Set();
@@ -228,13 +229,18 @@ export async function discoverProject(token, projectId = undefined) {
 
     for (const endpoint of LOAD_CODE_ASSIST_ENDPOINTS) {
         try {
+            const headers = {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+                ...LOAD_CODE_ASSIST_HEADERS
+            };
+            if (projectId && config.useBillingProject) {
+                headers['X-Goog-User-Project'] = projectId;
+            }
+
             const response = await throttledFetch(`${endpoint}/v1internal:loadCodeAssist`, {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                    ...LOAD_CODE_ASSIST_HEADERS
-                },
+                headers,
                 body: JSON.stringify({ metadata, mode: 1 })
             });
 

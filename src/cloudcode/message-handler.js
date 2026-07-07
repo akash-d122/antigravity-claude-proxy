@@ -16,14 +16,15 @@ import {
     CAPACITY_BACKOFF_TIERS_MS,
     MAX_CAPACITY_RETRIES,
     BACKOFF_BY_ERROR_TYPE,
-    isThinkingModel
+    isThinkingModel,
+    DEFAULT_PROJECT_ID
 } from '../constants.js';
 import { convertGoogleToAnthropic } from '../format/index.js';
 import { isRateLimitError, isAuthError, isAccountForbiddenError, AccountForbiddenError } from '../errors.js';
 import { formatDuration, sleep, isNetworkError, throttledFetch } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
 import { parseResetTime } from './rate-limit-parser.js';
-import { buildCloudCodeRequest, buildHeaders } from './request-builder.js';
+import { buildCloudCodeRequest, buildHeaders, disabledProjects } from './request-builder.js';
 import { parseThinkingSSEResponse } from './sse-parser.js';
 import { getFallbackModel } from '../fallback-config.js';
 import {
@@ -139,8 +140,8 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
         try {
             // Get token and project for this account
             const token = await accountManager.getTokenForAccount(account);
-            const project = await accountManager.getProjectForAccount(account, token);
-            const payload = buildCloudCodeRequest(anthropicRequest, project, account.email);
+            let project = await accountManager.getProjectForAccount(account, token);
+            let payload = buildCloudCodeRequest(anthropicRequest, project, account.email);
 
             logger.debug(`[CloudCode] Sending request for model: ${model}`);
 
@@ -156,15 +157,52 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                         ? `${endpoint}/v1internal:streamGenerateContent?alt=sse`
                         : `${endpoint}/v1internal:generateContent`;
 
-                    const response = await throttledFetch(url, {
+                    let response = await throttledFetch(url, {
                         method: 'POST',
-                        headers: buildHeaders(token, model, isThinking ? 'text/event-stream' : 'application/json', payload.request.sessionId),
+                        headers: buildHeaders(token, model, isThinking ? 'text/event-stream' : 'application/json', payload.request.sessionId, project),
                         body: JSON.stringify(payload)
                     });
 
+                    let errorText = '';
                     if (!response.ok) {
-                        const errorText = await response.text();
+                        errorText = await response.text();
                         logger.warn(`[CloudCode] Error at ${endpoint}: ${response.status} - ${errorText}`);
+
+                        // Fallback retry if project API is disabled (403 SERVICE_DISABLED)
+                        if (response.status === 403 && project && project !== DEFAULT_PROJECT_ID && (errorText.includes('SERVICE_DISABLED') || errorText.includes('not been used'))) {
+                            logger.warn(`[CloudCode] Project API disabled for ${project}. Retrying request with default project...`);
+                            disabledProjects.add(project);
+                            const fallbackPayload = buildCloudCodeRequest(anthropicRequest, DEFAULT_PROJECT_ID, account.email);
+                            const fallbackResponse = await throttledFetch(url, {
+                                method: 'POST',
+                                headers: buildHeaders(token, model, isThinking ? 'text/event-stream' : 'application/json', fallbackPayload.request.sessionId),
+                                body: JSON.stringify(fallbackPayload)
+                            });
+                            if (fallbackResponse.ok) {
+                                response = fallbackResponse;
+                                errorText = '';
+                                project = DEFAULT_PROJECT_ID;
+                                payload = fallbackPayload;
+                            } else {
+                                response = fallbackResponse;
+                                errorText = await response.text();
+                                logger.error(`[CloudCode] Fallback request retry also failed: ${response.status} - ${errorText}`);
+                            }
+                        }
+                    }
+
+                    if (!response.ok) {
+
+                        if (response.status === 400) {
+                            try {
+                                const fs = await import('fs');
+                                const debugPath = 'C:\\Users\\akash\\.gemini\\antigravity-ide\\brain\\b4d03986-bf96-4d10-926a-04316f81f433\\scratch\\error_400_payload.json';
+                                fs.writeFileSync(debugPath, JSON.stringify(payload, null, 2));
+                                logger.error(`[CloudCode] Dumped 400 error payload to ${debugPath}`);
+                            } catch (err) {
+                                logger.error(`[CloudCode] Failed to dump payload: ${err.message}`);
+                            }
+                        }
 
                         if (response.status === 401) {
                             // Check for permanent auth failures

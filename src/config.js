@@ -35,6 +35,7 @@ const DEFAULT_CONFIG = {
     debug: false,
     devMode: false,
     logLevel: 'info',
+    useBillingProject: false, // Set to true to pass X-Goog-User-Project for paid overages/credits
     maxRetries: 5,
     retryBaseMs: 1000,
     retryMaxMs: 30000,
@@ -126,6 +127,7 @@ function loadConfig() {
         if (process.env.WEBUI_PASSWORD) config.webuiPassword = process.env.WEBUI_PASSWORD;
         if (process.env.DEBUG === 'true') config.debug = true;
         if (process.env.DEV_MODE === 'true') config.devMode = true;
+        if (process.env.USE_BILLING_PROJECT) config.useBillingProject = process.env.USE_BILLING_PROJECT === 'true';
 
         // Backward compat: debug implies devMode
         if (config.debug && !config.devMode) config.devMode = true;

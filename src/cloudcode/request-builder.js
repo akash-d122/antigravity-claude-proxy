@@ -9,10 +9,15 @@ import {
     ANTIGRAVITY_HEADERS,
     ANTIGRAVITY_SYSTEM_INSTRUCTION,
     getModelFamily,
-    isThinkingModel
+    isThinkingModel,
+    DEFAULT_PROJECT_ID
 } from '../constants.js';
 import { convertAnthropicToGoogle } from '../format/index.js';
 import { deriveSessionId } from './session-manager.js';
+import { config } from '../config.js';
+
+// Cache of projects where the Cloud Code Private API is disabled
+export const disabledProjects = new Set();
 
 /**
  * Build the wrapped request body for Cloud Code API
@@ -46,8 +51,10 @@ export function buildCloudCodeRequest(anthropicRequest, projectId, accountEmail)
         }
     }
 
+    const targetProject = (projectId && config.useBillingProject && !disabledProjects.has(projectId)) ? projectId : DEFAULT_PROJECT_ID;
+
     const payload = {
-        project: projectId,
+        project: targetProject,
         model: model,
         request: googleRequest,
         userAgent: 'antigravity',
@@ -73,12 +80,17 @@ export function buildCloudCodeRequest(anthropicRequest, projectId, accountEmail)
  * @param {string} [sessionId] - Optional session ID for X-Machine-Session-Id header
  * @returns {Object} Headers object
  */
-export function buildHeaders(token, model, accept = 'application/json', sessionId) {
+export function buildHeaders(token, model, accept = 'application/json', sessionId, projectId) {
     const headers = {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         ...ANTIGRAVITY_HEADERS
     };
+
+    // Add quota/billing project header if provided (enables paid credits/overage support)
+    if (projectId && config.useBillingProject && !disabledProjects.has(projectId)) {
+        headers['X-Goog-User-Project'] = projectId;
+    }
 
     // Add session ID header if provided (matches Antigravity binary behavior)
     if (sessionId) {

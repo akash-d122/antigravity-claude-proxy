@@ -253,5 +253,13 @@ export function convertAnthropicToGoogle(anthropicRequest) {
         googleRequest.generationConfig.maxOutputTokens = GEMINI_MAX_OUTPUT_TOKENS;
     }
 
+    // Cap max tokens for Claude models
+    // Google API throws 400 Invalid Argument if maxOutputTokens is too large (e.g., Hermes requesting 128000)
+    // Claude 3.5 models support up to 64K extended output tokens.
+    if (isClaudeModel && googleRequest.generationConfig.maxOutputTokens > 64000) {
+        logger.debug(`[RequestConverter] Capping Claude max_tokens from ${googleRequest.generationConfig.maxOutputTokens} to 64000`);
+        googleRequest.generationConfig.maxOutputTokens = 64000;
+    }
+
     return googleRequest;
 }

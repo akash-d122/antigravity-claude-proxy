@@ -11,10 +11,13 @@ import {
     LOAD_CODE_ASSIST_HEADERS,
     CLIENT_METADATA,
     getModelFamily,
-    MODEL_VALIDATION_CACHE_TTL_MS
+    MODEL_VALIDATION_CACHE_TTL_MS,
+    DEFAULT_PROJECT_ID
 } from '../constants.js';
 import { logger } from '../utils/logger.js';
 import { throttledFetch } from '../utils/helpers.js';
+import { disabledProjects } from './request-builder.js';
+import { config } from '../config.js';
 
 // Model validation cache
 const modelCache = {
@@ -75,11 +78,20 @@ export async function listModels(token) {
  * @returns {Promise<Object>} Raw response from fetchAvailableModels API
  */
 export async function fetchAvailableModels(token, projectId = null) {
+    // If billing project is not enabled or project is known to be disabled, fallback immediately
+    if (projectId && (!config.useBillingProject || disabledProjects.has(projectId))) {
+        projectId = null;
+    }
+
     const headers = {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
         ...ANTIGRAVITY_HEADERS
     };
+
+    if (projectId) {
+        headers['X-Goog-User-Project'] = projectId;
+    }
 
     // Include project ID in body for accurate quota info (per Quotio implementation)
     const body = projectId ? { project: projectId } : {};
@@ -96,11 +108,19 @@ export async function fetchAvailableModels(token, projectId = null) {
             if (!response.ok) {
                 const errorText = await response.text();
                 logger.warn(`[CloudCode] fetchAvailableModels error at ${endpoint}: ${response.status}`);
+                
                 // Detect permanent ToS ban — no point trying other endpoints
                 if (response.status === 403) {
                     const lower = (errorText || '').toLowerCase();
                     if (lower.includes('has been disabled') && lower.includes('violation of terms of service')) {
                         throw new Error(`ACCOUNT_BANNED: ${errorText}`);
+                    }
+
+                    // Fallback to fetch without projectId if 403 occurs (API disabled / permission denied on billing project)
+                    if (projectId && projectId !== DEFAULT_PROJECT_ID) {
+                        logger.warn(`[CloudCode] fetchAvailableModels 403 for project ${projectId}. Retrying without billing project...`);
+                        disabledProjects.add(projectId);
+                        return await fetchAvailableModels(token, null);
                     }
                 }
                 continue;

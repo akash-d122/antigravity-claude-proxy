@@ -11,6 +11,7 @@ import {
 } from '../constants.js';
 import { logger } from '../utils/logger.js';
 import { sleep, throttledFetch } from '../utils/helpers.js';
+import { config } from '../config.js';
 
 /**
  * Get the default tier ID from allowed tiers list
@@ -64,13 +65,18 @@ export async function onboardUser(token, tierId, projectId = undefined, maxAttem
     for (const endpoint of ONBOARD_USER_ENDPOINTS) {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             try {
+                const headers = {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                    ...ANTIGRAVITY_HEADERS
+                };
+                if (projectId && config.useBillingProject) {
+                    headers['X-Goog-User-Project'] = projectId;
+                }
+
                 const response = await throttledFetch(`${endpoint}/v1internal:onboardUser`, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json',
-                        ...ANTIGRAVITY_HEADERS
-                    },
+                    headers,
                     body: JSON.stringify(requestBody)
                 });
 
