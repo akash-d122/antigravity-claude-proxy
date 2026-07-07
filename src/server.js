@@ -75,6 +75,16 @@ async function ensureInitialized() {
     return initPromise;
 }
 
+// Normalize URL paths to remove double slashes (e.g., //v1/models -> /v1/models)
+app.use((req, res, next) => {
+    if (req.url.includes('//')) {
+        const [pathPart, queryPart] = req.url.split('?');
+        const normalizedPath = pathPart.replace(/\/+/g, '/');
+        req.url = queryPart ? `${normalizedPath}?${queryPart}` : normalizedPath;
+    }
+    next();
+});
+
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
@@ -219,6 +229,8 @@ app.use((req, res, next) => {
             // Colorize status code
             if (status >= 500) {
                 logger.error(logMsg);
+            } else if (status === 404) {
+                logger.info(logMsg);
             } else if (status >= 400) {
                 logger.warn(logMsg);
             } else {
@@ -715,6 +727,333 @@ app.post('/v1/messages/count_tokens', (req, res) => {
             message: 'Token counting is not implemented. Use /v1/messages with max_tokens or configure your client to skip token counting.'
         }
     });
+});
+
+/**
+ * Helper: Map OpenAI request format to Anthropic format
+ */
+function convertOpenAIToAnthropic(openaiRequest) {
+    const {
+        model,
+        messages = [],
+        max_tokens,
+        max_completion_tokens,
+        stream,
+        temperature,
+        top_p,
+        top_k
+    } = openaiRequest;
+
+    // 1. Extract system messages
+    const systemMessages = messages.filter(m => m.role === 'system');
+    const systemPrompt = systemMessages
+        .map(m => {
+            if (typeof m.content === 'string') return m.content;
+            if (Array.isArray(m.content)) {
+                return m.content
+                    .filter(b => b.type === 'text')
+                    .map(b => b.text)
+                    .join('\n');
+            }
+            return '';
+        })
+        .filter(Boolean)
+        .join('\n\n');
+
+    // 2. Filter out system messages and map roles/content
+    const anthropicMessages = messages
+        .filter(m => m.role !== 'system')
+        .map(m => {
+            let role = m.role;
+            if (role === 'model') role = 'assistant';
+            
+            let content = m.content;
+            if (Array.isArray(content)) {
+                content = content.map(block => {
+                    if (block.type === 'text') {
+                        return { type: 'text', text: block.text };
+                    }
+                    if (block.type === 'image_url' && block.image_url?.url) {
+                        const url = block.image_url.url;
+                        if (url.startsWith('data:')) {
+                            const match = url.match(/^data:([^;]+);base64,(.+)$/);
+                            if (match) {
+                                return {
+                                    type: 'image',
+                                    source: {
+                                        type: 'base64',
+                                        media_type: match[1],
+                                        data: match[2]
+                                    }
+                                };
+                            }
+                        }
+                    }
+                    return block; // fallback
+                });
+            }
+
+            return { role, content };
+        });
+
+    const anthropicRequest = {
+        model,
+        messages: anthropicMessages,
+        max_tokens: max_tokens || max_completion_tokens || 4096,
+        stream: !!stream
+    };
+
+    if (systemPrompt) {
+        anthropicRequest.system = systemPrompt;
+    }
+    if (temperature !== undefined) {
+        anthropicRequest.temperature = temperature;
+    }
+    if (top_p !== undefined) {
+        anthropicRequest.top_p = top_p;
+    }
+    if (top_k !== undefined) {
+        anthropicRequest.top_k = top_k;
+    }
+
+    return anthropicRequest;
+}
+
+/**
+ * Helper: Map Anthropic stop reason to OpenAI finish reason
+ */
+function mapStopReason(stopReason) {
+    if (stopReason === 'end_turn') return 'stop';
+    if (stopReason === 'max_tokens') return 'length';
+    if (stopReason === 'stop_sequence') return 'stop';
+    if (stopReason === 'tool_use') return 'tool_calls';
+    return stopReason || 'stop';
+}
+
+/**
+ * OpenAI-compatible Chat Completions API
+ * POST /v1/chat/completions
+ */
+app.post('/v1/chat/completions', async (req, res) => {
+    try {
+        // Ensure account manager is initialized
+        await ensureInitialized();
+
+        // Convert request from OpenAI to Anthropic
+        const anthropicRequest = convertOpenAIToAnthropic(req.body);
+
+        // Resolve model mapping if configured
+        let requestedModel = anthropicRequest.model || 'claude-3-5-sonnet-20241022';
+        const modelMapping = config.modelMapping || {};
+        if (modelMapping[requestedModel] && modelMapping[requestedModel].mapping) {
+            const targetModel = modelMapping[requestedModel].mapping;
+            logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
+            requestedModel = targetModel;
+        }
+
+        const modelId = requestedModel;
+        anthropicRequest.model = modelId;
+
+        // Validate model ID before processing
+        const { account: validationAccount } = accountManager.selectAccount();
+        if (validationAccount) {
+            const token = await accountManager.getTokenForAccount(validationAccount);
+            const projectId = validationAccount.subscription?.projectId || null;
+            const valid = await isValidModel(modelId, token, projectId);
+
+            if (!valid) {
+                throw new Error(`invalid_request_error: Invalid model: ${modelId}. Use /v1/models to see available models.`);
+            }
+        }
+
+        // Optimistic Retry: If ALL accounts are rate-limited for this model, reset them to force a fresh check.
+        if (accountManager.isAllRateLimited(modelId)) {
+            logger.warn(`[Server] All accounts rate-limited for ${modelId}. Resetting state for optimistic retry.`);
+            accountManager.resetAllRateLimits();
+        }
+
+        logger.info(`[API] OpenAI-compatible request for model: ${modelId}, stream: ${!!anthropicRequest.stream}`);
+
+        if (anthropicRequest.stream) {
+            try {
+                // Initialize the generator
+                const generator = sendMessageStream(anthropicRequest, accountManager, FALLBACK_ENABLED);
+                
+                // Buffer the first event to check for immediate failure before sending headers
+                const firstResult = await generator.next();
+
+                res.status(200);
+                res.setHeader('Content-Type', 'text/event-stream');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.setHeader('Connection', 'keep-alive');
+                res.setHeader('X-Accel-Buffering', 'no');
+                res.flushHeaders();
+
+                let messageId = `chatcmpl-${Math.random().toString(36).substring(2, 11)}`;
+                let modelName = modelId;
+                const createdTimestamp = Math.floor(Date.now() / 1000);
+
+                // Helper to send a chunk in OpenAI SSE format
+                const sendOpenAIChunk = (choiceDelta, finishReason = null, usage = undefined) => {
+                    const chunk = {
+                        id: messageId,
+                        object: 'chat.completion.chunk',
+                        created: createdTimestamp,
+                        model: modelName,
+                        choices: [{
+                            index: 0,
+                            delta: choiceDelta,
+                            finish_reason: finishReason
+                        }]
+                    };
+                    if (usage) {
+                        chunk.usage = usage;
+                    }
+                    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                    if (res.flush) res.flush();
+                };
+
+                // Send the initial assistant role chunk
+                sendOpenAIChunk({ role: 'assistant' });
+
+                // If first chunk has been buffered, process it
+                if (!firstResult.done) {
+                    const event = firstResult.value;
+                    if (event.type === 'message_start' && event.message) {
+                        if (event.message.id) messageId = event.message.id;
+                        if (event.message.model) modelName = event.message.model;
+                    } else if (event.type === 'content_block_delta' && event.delta) {
+                        if (event.delta.type === 'text_delta') {
+                            sendOpenAIChunk({ content: event.delta.text });
+                        } else if (event.delta.type === 'thinking_delta') {
+                            sendOpenAIChunk({ reasoning_content: event.delta.thinking });
+                        }
+                    }
+                }
+
+                // Process the rest of the stream
+                for await (const event of generator) {
+                    if (event.type === 'message_start' && event.message) {
+                        if (event.message.id) messageId = event.message.id;
+                        if (event.message.model) modelName = event.message.model;
+                    } else if (event.type === 'content_block_delta' && event.delta) {
+                        if (event.delta.type === 'text_delta') {
+                            sendOpenAIChunk({ content: event.delta.text });
+                        } else if (event.delta.type === 'thinking_delta') {
+                            sendOpenAIChunk({ reasoning_content: event.delta.thinking });
+                        }
+                    } else if (event.type === 'message_delta' && event.delta) {
+                        const finishReason = mapStopReason(event.delta.stop_reason);
+                        let usage;
+                        if (event.usage) {
+                            usage = {
+                                prompt_tokens: event.usage.input_tokens || 0,
+                                completion_tokens: event.usage.output_tokens || 0,
+                                total_tokens: (event.usage.input_tokens || 0) + (event.usage.output_tokens || 0)
+                            };
+                        }
+                        sendOpenAIChunk({}, finishReason, usage);
+                    }
+                }
+
+                res.write('data: [DONE]\n\n');
+                res.end();
+
+            } catch (error) {
+                if (!res.headersSent) {
+                    logger.error('[API] OpenAI stream error:', error);
+                    const { errorType, statusCode, errorMessage } = parseError(error);
+                    
+                    return res.status(statusCode).json({
+                        error: {
+                            message: errorMessage,
+                            type: errorType,
+                            param: null,
+                            code: null
+                        }
+                    });
+                }
+                
+                logger.error('[API] OpenAI mid-stream error:', error);
+                const { errorMessage } = parseError(error);
+                res.write(`data: ${JSON.stringify({ error: { message: errorMessage } })}\n\n`);
+                res.write('data: [DONE]\n\n');
+                res.end();
+            }
+        } else {
+            // Handle non-streaming response
+            const response = await sendMessage(anthropicRequest, accountManager, FALLBACK_ENABLED);
+            
+            let textContent = '';
+            let reasoningContent = '';
+            if (Array.isArray(response.content)) {
+                for (const block of response.content) {
+                    if (block.type === 'text') {
+                        textContent += block.text;
+                    } else if (block.type === 'thinking' || block.thinking) {
+                        reasoningContent += block.thinking || block.text || '';
+                    }
+                }
+            } else if (typeof response.content === 'string') {
+                textContent = response.content;
+            }
+
+            const openaiResponse = {
+                id: response.id || `chatcmpl-${Math.random().toString(36).substring(2, 11)}`,
+                object: 'chat.completion',
+                created: Math.floor(Date.now() / 1000),
+                model: response.model || modelId,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: textContent,
+                        ...(reasoningContent ? { reasoning_content: reasoningContent } : {})
+                    },
+                    finish_reason: mapStopReason(response.stop_reason)
+                }],
+                usage: {
+                    prompt_tokens: response.usage?.input_tokens || 0,
+                    completion_tokens: response.usage?.output_tokens || 0,
+                    total_tokens: (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0)
+                }
+            };
+
+            res.json(openaiResponse);
+        }
+
+    } catch (error) {
+        logger.error('[API] OpenAI API Error:', error);
+        let { errorType, statusCode, errorMessage } = parseError(error);
+
+        // Attempt token refresh on auth errors
+        if (errorType === 'authentication_error') {
+            logger.warn('[API] Token might be expired, attempting refresh...');
+            try {
+                accountManager.clearProjectCache();
+                accountManager.clearTokenCache();
+                await forceRefresh();
+                errorMessage = 'Token was expired and has been refreshed. Please retry your request.';
+            } catch (refreshError) {
+                errorMessage = 'Could not refresh token. Make sure Antigravity is running.';
+            }
+        }
+
+        if (res.headersSent) {
+            res.write(`data: ${JSON.stringify({ error: { message: errorMessage } })}\n\n`);
+            res.write('data: [DONE]\n\n');
+            res.end();
+        } else {
+            res.status(statusCode).json({
+                error: {
+                    message: errorMessage,
+                    type: errorType,
+                    param: null,
+                    code: null
+                }
+            });
+        }
+    }
 });
 
 /**

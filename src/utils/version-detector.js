@@ -110,7 +110,7 @@ function logVersionInfo(version, source) {
 
     import('./logger.js').then(({ logger }) => {
         if (source === 'fallback') {
-            logger.warn(`X-Client-Version: using hardcoded fallback ${version} — product.json not found. Set ANTIGRAVITY_CLIENT_VERSION (exact version) or ANTIGRAVITY_CLIENT_VERSION_FALLBACK (fallback value) env var to override.`);
+            logger.info(`X-Client-Version: using hardcoded fallback ${version} — product.json not found. Set ANTIGRAVITY_CLIENT_VERSION (exact version) or ANTIGRAVITY_CLIENT_VERSION_FALLBACK (fallback value) env var to override.`);
         } else {
             logger.debug(`X-Client-Version: ${version} (source: ${source})`);
         }
