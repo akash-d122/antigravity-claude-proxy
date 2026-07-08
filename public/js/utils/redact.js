@@ -4,7 +4,9 @@
  */
 window.Redact = {
     email(email) {
-        if (!Alpine.store('settings').redactMode) return email;
+        const devMode = Alpine.store('data')?.devMode;
+        const redactMode = Alpine.store('settings')?.redactMode;
+        if (!devMode || !redactMode) return email;
         if (!email) return email;
         const accounts = Alpine.store('data')?.accounts || [];
         // Match full email or username-only (split('@')[0]) form
@@ -13,7 +15,9 @@ window.Redact = {
     },
 
     logMessage(message) {
-        if (!Alpine.store('settings').redactMode) return message;
+        const devMode = Alpine.store('data')?.devMode;
+        const redactMode = Alpine.store('settings')?.redactMode;
+        if (!devMode || !redactMode) return message;
         const accounts = Alpine.store('data')?.accounts || [];
         let result = message;
         accounts.forEach((acc, idx) => {

@@ -110,7 +110,7 @@ window.Components.logsViewer = () => ({
     exportLogs() {
         if (this.logs.length === 0) return;
 
-        const shouldRedact = Alpine.store('settings')?.redactMode && window.Redact;
+        const shouldRedact = Alpine.store('data')?.devMode && Alpine.store('settings')?.redactMode && window.Redact;
         const lines = this.logs.map(log => {
             const ts = new Date(log.timestamp).toISOString();
             const message = shouldRedact ? window.Redact.logMessage(log.message) : log.message;

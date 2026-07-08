@@ -106,6 +106,10 @@ async function runTests() {
     // ==========================================================================
     console.log('\n─── HealthTracker Tests ───');
 
+    const originalDateNow = Date.now;
+    let mockTime = 1600000000000;
+    Date.now = () => mockTime;
+
     test('HealthTracker: initial score is 70 by default', () => {
         const tracker = new HealthTracker();
         const score = tracker.getScore('new@example.com');
@@ -217,6 +221,8 @@ async function runTests() {
         tracker.reset('test@example.com');
         assertEqual(tracker.getConsecutiveFailures('test@example.com'), 0);
     });
+
+    Date.now = originalDateNow;
 
     // ==========================================================================
     // TOKEN BUCKET TRACKER TESTS

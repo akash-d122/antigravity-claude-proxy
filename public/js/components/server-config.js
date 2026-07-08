@@ -153,6 +153,13 @@ window.Components.serverConfig = () => ({
                 store.showToast(store.t('devModeToggled', { status }), 'success');
                 // Update data store
                 Alpine.store('data').devMode = enabled;
+                
+                // If developer mode is disabled, reset screenshot/redact mode
+                if (!enabled) {
+                    Alpine.store('settings').redactMode = false;
+                    Alpine.store('settings').saveSettings(true);
+                }
+                
                 await this.fetchServerConfig(); // Confirm server state
             } else {
                 throw new Error(data.error || store.t('failedToUpdateDevMode'));
