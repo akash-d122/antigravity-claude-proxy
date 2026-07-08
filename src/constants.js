@@ -270,10 +270,10 @@ export const OAUTH_CONFIG = {
 };
 export const OAUTH_REDIRECT_URI = `http://localhost:${OAUTH_CONFIG.callbackPort}/oauth-callback`;
 
-// Minimal Antigravity system instruction (from CLIProxyAPI)
-// Only includes the essential identity portion to reduce token usage and improve response quality
-// Reference: GitHub issue #76, CLIProxyAPI, gcli2api
-export const ANTIGRAVITY_SYSTEM_INSTRUCTION = `You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**`;
+// Minimal system instruction for Cloud Code API compatibility
+// Stripped to bare minimum to avoid identity pollution (council fix 2026-07-08)
+// Original verbose instruction caused competing identity frames with Claude Code's own system prompt
+export const ANTIGRAVITY_SYSTEM_INSTRUCTION = ``;
 
 // Model fallback mapping - maps primary model to fallback when quota exhausted
 export const MODEL_FALLBACK_MAP = {

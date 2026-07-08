@@ -550,16 +550,9 @@ export function sanitizeSchema(schema) {
         sanitized.type = 'object';
     }
 
-    // If object type with no properties, add placeholder
-    if (sanitized.type === 'object' && (!sanitized.properties || Object.keys(sanitized.properties).length === 0)) {
-        sanitized.properties = {
-            reason: {
-                type: 'string',
-                description: 'Reason for calling this tool'
-            }
-        };
-        sanitized.required = ['reason'];
-    }
+    // Empty object schemas (no properties) are valid — don't inject placeholders.
+    // Claude Code's no-arg tools intentionally have empty {} schemas.
+    // Injecting a mandatory 'reason' field causes tool call mismatches.
 
     return sanitized;
 }

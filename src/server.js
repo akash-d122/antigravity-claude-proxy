@@ -717,16 +717,56 @@ app.get('/v1/models', async (req, res) => {
 
 /**
  * Count tokens endpoint - Anthropic Messages API compatible
- * Uses local tokenization with official tokenizers (@anthropic-ai/tokenizer for Claude, @lenml/tokenizer-gemini for Gemini)
+ * Rough heuristic estimate so Claude Code can manage context windows properly.
+ * Uses ~4 chars per token approximation (conservative for English text + code).
  */
 app.post('/v1/messages/count_tokens', (req, res) => {
-    res.status(501).json({
-        type: 'error',
-        error: {
-            type: 'not_implemented',
-            message: 'Token counting is not implemented. Use /v1/messages with max_tokens or configure your client to skip token counting.'
+    try {
+        const { messages, system, tools } = req.body;
+        let totalChars = 0;
+
+        // Count system prompt chars
+        if (system) {
+            if (typeof system === 'string') {
+                totalChars += system.length;
+            } else if (Array.isArray(system)) {
+                for (const block of system) {
+                    if (block.text) totalChars += block.text.length;
+                }
+            }
         }
-    });
+
+        // Count message chars
+        if (messages && Array.isArray(messages)) {
+            for (const msg of messages) {
+                if (typeof msg.content === 'string') {
+                    totalChars += msg.content.length;
+                } else if (Array.isArray(msg.content)) {
+                    for (const block of msg.content) {
+                        if (block.text) totalChars += block.text.length;
+                        if (block.thinking) totalChars += block.thinking.length;
+                    }
+                }
+            }
+        }
+
+        // Count tool definition chars
+        if (tools && Array.isArray(tools)) {
+            totalChars += JSON.stringify(tools).length;
+        }
+
+        // ~4 chars per token is a conservative estimate for mixed code/English
+        const estimatedTokens = Math.ceil(totalChars / 4);
+
+        res.json({
+            input_tokens: estimatedTokens
+        });
+    } catch (error) {
+        // Fallback: return a safe estimate rather than erroring
+        res.json({
+            input_tokens: 1000
+        });
+    }
 });
 
 /**

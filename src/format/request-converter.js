@@ -166,23 +166,32 @@ export function convertAnthropicToGoogle(anthropicRequest) {
                 include_thoughts: true
             };
 
-            // Cloud Code API requires thinking_budget to actually produce thinking blocks.
-            // Without it, include_thoughts alone is ignored and Claude falls back to
-            // <thinking> XML tags in text. Default to 32000 when not provided (e.g. adaptive mode).
-            const thinkingBudget = thinking?.budget_tokens || 32000;
-            thinkingConfig.thinking_budget = thinkingBudget;
-            logger.debug(`[RequestConverter] Claude thinking enabled with budget: ${thinkingBudget}${!thinking?.budget_tokens ? ' (default)' : ''}`);
+            // Pass through thinking budget from Claude Code's adaptive mode.
+            // When thinking.type === 'auto' or budget_tokens is absent, let the API decide
+            // instead of forcing a fixed 32000 that wastes tokens on simple tasks
+            // and under-allocates on complex ones.
+            if (thinking?.budget_tokens) {
+                thinkingConfig.thinking_budget = thinking.budget_tokens;
+                logger.debug(`[RequestConverter] Claude thinking enabled with explicit budget: ${thinking.budget_tokens}`);
 
-            // Validate max_tokens > thinking_budget as required by the API
-            const currentMaxTokens = googleRequest.generationConfig.maxOutputTokens;
-            if (currentMaxTokens && currentMaxTokens <= thinkingBudget) {
-                const adjustedMaxTokens = thinkingBudget + 8192;
-                if (thinking?.budget_tokens) {
-                    logger.warn(`[RequestConverter] max_tokens (${currentMaxTokens}) <= thinking_budget (${thinkingBudget}). Adjusting to ${adjustedMaxTokens} to satisfy API requirements`);
-                } else {
-                    logger.debug(`[RequestConverter] Adjusting max_tokens to ${adjustedMaxTokens} for default thinking budget`);
+                // Validate max_tokens > thinking_budget as required by the API
+                const currentMaxTokens = googleRequest.generationConfig.maxOutputTokens;
+                if (currentMaxTokens && currentMaxTokens <= thinking.budget_tokens) {
+                    const adjustedMaxTokens = thinking.budget_tokens + 8192;
+                    logger.warn(`[RequestConverter] max_tokens (${currentMaxTokens}) <= thinking_budget (${thinking.budget_tokens}). Adjusting to ${adjustedMaxTokens}`);
+                    googleRequest.generationConfig.maxOutputTokens = adjustedMaxTokens;
                 }
-                googleRequest.generationConfig.maxOutputTokens = adjustedMaxTokens;
+            } else {
+                // Adaptive mode: set a reasonable default that the API requires
+                // but don't over-allocate. Use 16000 as a balanced default.
+                thinkingConfig.thinking_budget = 16000;
+                logger.debug(`[RequestConverter] Claude thinking enabled in adaptive mode (budget: 16000)`);
+
+                const currentMaxTokens = googleRequest.generationConfig.maxOutputTokens;
+                if (currentMaxTokens && currentMaxTokens <= 16000) {
+                    googleRequest.generationConfig.maxOutputTokens = 24192;
+                    logger.debug(`[RequestConverter] Adjusting max_tokens to 24192 for adaptive thinking`);
+                }
             }
 
             googleRequest.generationConfig.thinkingConfig = thinkingConfig;

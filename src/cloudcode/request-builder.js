@@ -34,13 +34,14 @@ export function buildCloudCodeRequest(anthropicRequest, projectId, accountEmail)
     // Use stable session ID derived from first user message for cache continuity
     googleRequest.sessionId = deriveSessionId(anthropicRequest, accountEmail);
 
-    // Build system instruction parts array with [ignore] tags to prevent model from
-    // identifying as "Antigravity" (fixes GitHub issue #76)
-    // Reference: CLIProxyAPI, gcli2api, AIClient-2-API all use this approach
-    const systemParts = [
-        { text: ANTIGRAVITY_SYSTEM_INSTRUCTION },
-        { text: `Please ignore the following [ignore]${ANTIGRAVITY_SYSTEM_INSTRUCTION}[/ignore]` }
-    ];
+    // Build system instruction parts — only include actual user system instructions
+    // Removed duplicate ANTIGRAVITY_SYSTEM_INSTRUCTION injection that caused identity pollution
+    const systemParts = [];
+
+    // Only inject the system instruction if it's non-empty (backward compat)
+    if (ANTIGRAVITY_SYSTEM_INSTRUCTION) {
+        systemParts.push({ text: ANTIGRAVITY_SYSTEM_INSTRUCTION });
+    }
 
     // Append any existing system instructions from the request
     if (googleRequest.systemInstruction && googleRequest.systemInstruction.parts) {
@@ -49,6 +50,11 @@ export function buildCloudCodeRequest(anthropicRequest, projectId, accountEmail)
                 systemParts.push({ text: part.text });
             }
         }
+    }
+
+    // Ensure at least one system part exists (API requires it)
+    if (systemParts.length === 0) {
+        systemParts.push({ text: 'You are a helpful AI coding assistant.' });
     }
 
     const targetProject = (projectId && config.useBillingProject && !disabledProjects.has(projectId)) ? projectId : DEFAULT_PROJECT_ID;
