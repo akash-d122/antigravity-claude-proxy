@@ -51,7 +51,7 @@ import {
  * @returns {Promise<Object>} Anthropic-format response object
  * @throws {Error} If max retries exceeded or no accounts available
  */
-export async function sendMessage(anthropicRequest, accountManager, fallbackEnabled = false) {
+export async function sendMessage(anthropicRequest, accountManager, fallbackEnabled = false, assistantPrefill = null) {
     const model = anthropicRequest.model;
     const isThinking = isThinkingModel(model);
 
@@ -90,7 +90,7 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                         if (fallbackModel) {
                             logger.warn(`[CloudCode] All accounts exhausted for ${model} (${formatDuration(minWaitMs)} wait). Attempting fallback to ${fallbackModel}`);
                             const fallbackRequest = { ...anthropicRequest, model: fallbackModel };
-                            return await sendMessage(fallbackRequest, accountManager, false);
+                            return await sendMessage(fallbackRequest, accountManager, false, assistantPrefill);
                         }
                     }
                     throw new Error(
@@ -139,11 +139,15 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
 
         try {
             // Get token and project for this account
-            const token = await accountManager.getTokenForAccount(account);
-            let project = await accountManager.getProjectForAccount(account, token);
-            let payload = buildCloudCodeRequest(anthropicRequest, project, account.email);
+                        const token = await accountManager.getTokenForAccount(account);
+                        let project = await accountManager.getProjectForAccount(account, token);
+                        let payload = buildCloudCodeRequest(anthropicRequest, project, account.email);
 
-            logger.debug(`[CloudCode] Sending request for model: ${model}`);
+                        // Extract internal flags before sending to API
+                        let disableParallel = payload._disableParallel;
+                        delete payload._disableParallel;
+
+                        logger.debug(`[CloudCode] Sending request for model: ${model}`);
 
             // Try each endpoint with index-based loop for capacity retry support
             let lastError = null;
@@ -173,6 +177,9 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                             logger.warn(`[CloudCode] Project API disabled for ${project}. Retrying request with default project...`);
                             disabledProjects.add(project);
                             const fallbackPayload = buildCloudCodeRequest(anthropicRequest, DEFAULT_PROJECT_ID, account.email);
+                            // Extract internal flags before sending to API
+                            const disableParallelFallback = fallbackPayload._disableParallel;
+                            delete fallbackPayload._disableParallel;
                             const fallbackResponse = await throttledFetch(url, {
                                 method: 'POST',
                                 headers: buildHeaders(token, model, isThinking ? 'text/event-stream' : 'application/json', fallbackPayload.request.sessionId),
@@ -183,6 +190,7 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                                 errorText = '';
                                 project = DEFAULT_PROJECT_ID;
                                 payload = fallbackPayload;
+                                disableParallel = disableParallelFallback;
                             } else {
                                 response = fallbackResponse;
                                 errorText = await response.text();
@@ -361,6 +369,19 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                         // Clear rate limit state on success
                         clearRateLimitState(account.email, model);
                         accountManager.notifySuccess(account, model);
+                        if (assistantPrefill && result.content) {
+                            const textBlock = result.content.find(block => block.type === 'text');
+                            if (textBlock) {
+                                textBlock.text = assistantPrefill + textBlock.text;
+                            } else {
+                                const thinkingIndex = result.content.findIndex(block => block.type === 'thinking');
+                                if (thinkingIndex !== -1) {
+                                    result.content.splice(thinkingIndex + 1, 0, { type: 'text', text: assistantPrefill });
+                                } else {
+                                    result.content.unshift({ type: 'text', text: assistantPrefill });
+                                }
+                            }
+                        }
                         return result;
                     }
 
@@ -370,7 +391,21 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
                     // Clear rate limit state on success
                     clearRateLimitState(account.email, model);
                     accountManager.notifySuccess(account, model);
-                    return convertGoogleToAnthropic(data, anthropicRequest.model);
+                              const anthropicResponse = convertGoogleToAnthropic(data, anthropicRequest.model, disableParallel);
+                              if (assistantPrefill && anthropicResponse.content) {
+                                  const textBlock = anthropicResponse.content.find(block => block.type === 'text');
+                                  if (textBlock) {
+                                      textBlock.text = assistantPrefill + textBlock.text;
+                                  } else {
+                                      const thinkingIndex = anthropicResponse.content.findIndex(block => block.type === 'thinking');
+                                      if (thinkingIndex !== -1) {
+                                          anthropicResponse.content.splice(thinkingIndex + 1, 0, { type: 'text', text: assistantPrefill });
+                                      } else {
+                                          anthropicResponse.content.unshift({ type: 'text', text: assistantPrefill });
+                                      }
+                                  }
+                              }
+                              return anthropicResponse;
 
                 } catch (endpointError) {
                     if (isRateLimitError(endpointError)) {
@@ -471,9 +506,11 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
         if (fallbackModel) {
             logger.warn(`[CloudCode] All retries exhausted for ${model}. Attempting fallback to ${fallbackModel}`);
             const fallbackRequest = { ...anthropicRequest, model: fallbackModel };
-            return await sendMessage(fallbackRequest, accountManager, false);
+            return await sendMessage(fallbackRequest, accountManager, false, assistantPrefill);
         }
     }
 
     throw new Error('Max retries exceeded');
 }
+
+

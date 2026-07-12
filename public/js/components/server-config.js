@@ -153,6 +153,9 @@ window.Components.serverConfig = () => ({
                 store.showToast(store.t('devModeToggled', { status }), 'success');
                 // Update data store
                 Alpine.store('data').devMode = enabled;
+                
+                // Removed reset of redactMode when devMode is disabled
+                // so users can still take redacted screenshots in normal mode.
                 await this.fetchServerConfig(); // Confirm server state
             } else {
                 throw new Error(data.error || store.t('failedToUpdateDevMode'));

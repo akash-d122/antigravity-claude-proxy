@@ -73,41 +73,62 @@ export function clampGeminiThinkingBudget(modelName, budget) {
  * @param {Array<Object>} messages - Array of messages in Anthropic format
  * @returns {Array<Object>} Messages with cache_control fields removed
  */
-export function cleanCacheControl(messages) {
-    if (!Array.isArray(messages)) return messages;
+function cleanBlocksArray(blocks) {
+    if (!Array.isArray(blocks)) return { blocks, count: 0 };
+    let count = 0;
+    const cleaned = blocks.map(block => {
+        if (!block || typeof block !== 'object') return block;
+        let newBlock = { ...block };
+        if (newBlock.cache_control !== undefined) {
+            delete newBlock.cache_control;
+            count++;
+        }
+        if (newBlock.type === 'tool_result' && Array.isArray(newBlock.content)) {
+            const inner = cleanBlocksArray(newBlock.content);
+            newBlock.content = inner.blocks;
+            count += inner.count;
+        }
+        return newBlock;
+    });
+    return { blocks: cleaned, count };
+}
 
-    let removedCount = 0;
+export function cleanCacheControl(input) {
+    if (!Array.isArray(input)) return input;
 
-    const cleaned = messages.map(message => {
-        if (!message || typeof message !== 'object') return message;
+    let totalRemoved = 0;
 
-        // Handle string content (no cache_control possible)
-        if (typeof message.content === 'string') return message;
+    const cleaned = input.map(item => {
+        if (!item || typeof item !== 'object') return item;
 
-        // Handle array content
-        if (!Array.isArray(message.content)) return message;
+        // If it's a message with a role and content array
+        if (item.role && Array.isArray(item.content)) {
+            const { blocks, count } = cleanBlocksArray(item.content);
+            totalRemoved += count;
+            return { ...item, content: blocks };
+        }
+        
+        // If it's a direct block (like from system array)
+        if (item.type !== undefined) {
+            let newBlock = { ...item };
+            if (newBlock.cache_control !== undefined) {
+                delete newBlock.cache_control;
+                totalRemoved++;
+            }
+            if (newBlock.type === 'tool_result' && Array.isArray(newBlock.content)) {
+                const inner = cleanBlocksArray(newBlock.content);
+                newBlock.content = inner.blocks;
+                totalRemoved += inner.count;
+            }
+            return newBlock;
+        }
 
-        const cleanedContent = message.content.map(block => {
-            if (!block || typeof block !== 'object') return block;
-
-            // Check if cache_control exists before destructuring
-            if (block.cache_control === undefined) return block;
-
-            // Create a shallow copy without cache_control
-            const { cache_control, ...cleanBlock } = block;
-            removedCount++;
-
-            return cleanBlock;
-        });
-
-        return {
-            ...message,
-            content: cleanedContent
-        };
+        // Keep item as is if neither message nor block
+        return item;
     });
 
-    if (removedCount > 0) {
-        logger.debug(`[ThinkingUtils] Removed cache_control from ${removedCount} block(s)`);
+    if (totalRemoved > 0) {
+        logger.debug(`[ThinkingUtils] Removed cache_control from ${totalRemoved} block(s)`);
     }
 
     return cleaned;

@@ -51,7 +51,7 @@ import crypto from 'crypto';
  * @yields {Object} Anthropic-format SSE events (message_start, content_block_start, content_block_delta, etc.)
  * @throws {Error} If max retries exceeded or no accounts available
  */
-export async function* sendMessageStream(anthropicRequest, accountManager, fallbackEnabled = false) {
+export async function* sendMessageStream(anthropicRequest, accountManager, fallbackEnabled = false, assistantPrefill = null) {
     const model = anthropicRequest.model;
 
     // Retry loop with account failover
@@ -138,11 +138,15 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
         }
 
         try {
-            const token = await accountManager.getTokenForAccount(account);
-            let project = await accountManager.getProjectForAccount(account, token);
-            let payload = buildCloudCodeRequest(anthropicRequest, project, account.email);
+                    const token = await accountManager.getTokenForAccount(account);
+                    let project = await accountManager.getProjectForAccount(account, token);
+                    let payload = buildCloudCodeRequest(anthropicRequest, project, account.email);
 
-            logger.debug(`[CloudCode] Starting stream for model: ${model}`);
+                    // Extract internal flags before sending to API
+                    let disableParallel = payload._disableParallel;
+                    delete payload._disableParallel;
+
+                    logger.debug(`[CloudCode] Starting stream for model: ${model}`);
 
             // Try each endpoint with index-based loop for capacity retry support
             let lastError = null;
@@ -166,26 +170,30 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                         logger.warn(`[CloudCode] Stream error at ${endpoint}: ${response.status} - ${errorText}`);
 
                         // Fallback retry if project API is disabled (403 SERVICE_DISABLED)
-                        if (response.status === 403 && project && project !== DEFAULT_PROJECT_ID && (errorText.includes('SERVICE_DISABLED') || errorText.includes('not been used'))) {
-                            logger.warn(`[CloudCode] Project API disabled for ${project}. Retrying stream with default project...`);
-                            disabledProjects.add(project);
-                            const fallbackPayload = buildCloudCodeRequest(anthropicRequest, DEFAULT_PROJECT_ID, account.email);
-                            const fallbackResponse = await throttledFetch(url, {
-                                method: 'POST',
-                                headers: buildHeaders(token, model, 'text/event-stream', fallbackPayload.request.sessionId),
-                                body: JSON.stringify(fallbackPayload)
-                            });
-                            if (fallbackResponse.ok) {
-                                response = fallbackResponse;
-                                errorText = '';
-                                project = DEFAULT_PROJECT_ID;
-                                payload = fallbackPayload;
-                            } else {
-                                response = fallbackResponse;
-                                errorText = await response.text();
-                                logger.error(`[CloudCode] Fallback stream retry also failed: ${response.status} - ${errorText}`);
-                            }
-                        }
+                                                if (response.status === 403 && project && project !== DEFAULT_PROJECT_ID && (errorText.includes('SERVICE_DISABLED') || errorText.includes('not been used'))) {
+                                                    logger.warn(`[CloudCode] Project API disabled for ${project}. Retrying stream with default project...`);
+                                                    disabledProjects.add(project);
+                                                    const fallbackPayload = buildCloudCodeRequest(anthropicRequest, DEFAULT_PROJECT_ID, account.email);
+                                                    // Extract internal flags before sending to API
+                                                    const disableParallelFallback = fallbackPayload._disableParallel;
+                                                    delete fallbackPayload._disableParallel;
+                                                    const fallbackResponse = await throttledFetch(url, {
+                                                        method: 'POST',
+                                                        headers: buildHeaders(token, model, 'text/event-stream', fallbackPayload.request.sessionId),
+                                                        body: JSON.stringify(fallbackPayload)
+                                                    });
+                                                    if (fallbackResponse.ok) {
+                                                        response = fallbackResponse;
+                                                        errorText = '';
+                                                        project = DEFAULT_PROJECT_ID;
+                                                        payload = fallbackPayload;
+                                                        disableParallel = disableParallelFallback;
+                                                    } else {
+                                                        response = fallbackResponse;
+                                                        errorText = await response.text();
+                                                        logger.error(`[CloudCode] Fallback stream retry also failed: ${response.status} - ${errorText}`);
+                                                    }
+                                                }
                     }
 
                     if (!response.ok) {
@@ -355,7 +363,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
 
                     for (let emptyRetries = 0; emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES; emptyRetries++) {
                         try {
-                            yield* streamSSEResponse(currentResponse, anthropicRequest.model);
+                            yield* streamSSEResponse(currentResponse, anthropicRequest.model, assistantPrefill, disableParallel);
                             logger.debug('[CloudCode] Stream completed');
                             // Clear rate limit state on success
                             clearRateLimitState(account.email, model);
@@ -415,7 +423,7 @@ export async function* sendMessageStream(anthropicRequest, accountManager, fallb
                                     await sleep(1000);
                                     currentResponse = await throttledFetch(url, {
                                         method: 'POST',
-                                        headers: buildHeaders(token, model, 'text/event-stream', undefined, project),
+                                        headers: buildHeaders(token, model, 'text/event-stream', payload.request.sessionId, project),
                                         body: JSON.stringify(payload)
                                     });
                                     if (currentResponse.ok) {
@@ -583,3 +591,5 @@ function* emitEmptyResponseFallback(model) {
 
     yield { type: 'message_stop' };
 }
+
+

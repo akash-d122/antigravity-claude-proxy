@@ -14,7 +14,7 @@ import { cacheSignature, cacheThinkingSignature } from './signature-cache.js';
  * @param {string} model - The model name used
  * @returns {Object} Anthropic format response
  */
-export function convertGoogleToAnthropic(googleResponse, model) {
+export function convertGoogleToAnthropic(googleResponse, model, disableParallel = false) {
     // Handle the response wrapper
     const response = googleResponse.response || googleResponse;
 
@@ -52,6 +52,12 @@ export function convertGoogleToAnthropic(googleResponse, model) {
                 });
             }
         } else if (part.functionCall) {
+            // If parallel tools are disabled and we already have a tool call, skip it
+            if (disableParallel && hasToolCalls) {
+                // Drop excess parallel tool calls
+                continue;
+            }
+
             // Convert functionCall to tool_use
             // Use the id from the response if available, otherwise generate one
             const toolId = part.functionCall.id || `toolu_${crypto.randomBytes(12).toString('hex')}`;
@@ -87,11 +93,15 @@ export function convertGoogleToAnthropic(googleResponse, model) {
     // Determine stop reason
     const finishReason = firstCandidate.finishReason;
     let stopReason = 'end_turn';
-    if (finishReason === 'STOP') {
+    
+    // If we extracted tool calls, force the stop reason to tool_use
+    if (hasToolCalls) {
+        stopReason = 'tool_use';
+    } else if (finishReason === 'STOP') {
         stopReason = 'end_turn';
     } else if (finishReason === 'MAX_TOKENS') {
         stopReason = 'max_tokens';
-    } else if (finishReason === 'TOOL_USE' || hasToolCalls) {
+    } else if (finishReason === 'TOOL_USE') {
         stopReason = 'tool_use';
     }
 
@@ -111,10 +121,11 @@ export function convertGoogleToAnthropic(googleResponse, model) {
         stop_reason: stopReason,
         stop_sequence: null,
         usage: {
-            input_tokens: promptTokens - cachedTokens,
+            input_tokens: Math.max(0, promptTokens - cachedTokens),
             output_tokens: usageMetadata.candidatesTokenCount || 0,
             cache_read_input_tokens: cachedTokens,
             cache_creation_input_tokens: 0
         }
     };
 }
+

@@ -27,11 +27,20 @@ export function convertRole(role) {
  */
 export function convertContentToParts(content, isClaudeModel = false, isGeminiModel = false) {
     if (typeof content === 'string') {
+        if (!content.trim()) {
+            return [];
+        }
         return [{ text: content }];
     }
 
+    if (content === null || content === undefined) {
+        return [];
+    }
+
     if (!Array.isArray(content)) {
-        return [{ text: String(content) }];
+        const strContent = String(content);
+        if (!strContent.trim()) return [];
+        return [{ text: strContent }];
     }
 
     const parts = [];
@@ -51,7 +60,7 @@ export function convertContentToParts(content, isClaudeModel = false, isGeminiMo
                 // Base64-encoded image
                 parts.push({
                     inlineData: {
-                        mimeType: block.source.media_type,
+                        mimeType: block.source.media_type || 'application/octet-stream',
                         data: block.source.data
                     }
                 });
@@ -69,7 +78,7 @@ export function convertContentToParts(content, isClaudeModel = false, isGeminiMo
             if (block.source?.type === 'base64') {
                 parts.push({
                     inlineData: {
-                        mimeType: block.source.media_type,
+                        mimeType: block.source.media_type || 'application/octet-stream',
                         data: block.source.data
                     }
                 });
@@ -118,7 +127,9 @@ export function convertContentToParts(content, isClaudeModel = false, isGeminiMo
             let responseContent = block.content;
             let imageParts = [];
 
-            if (typeof responseContent === 'string') {
+            if (!responseContent) {
+                responseContent = { result: "Success" };
+            } else if (typeof responseContent === 'string') {
                 responseContent = { result: responseContent };
             } else if (Array.isArray(responseContent)) {
                 // Extract images from tool results first (e.g., from Read tool reading image files)
@@ -126,7 +137,7 @@ export function convertContentToParts(content, isClaudeModel = false, isGeminiMo
                     if (item.type === 'image' && item.source?.type === 'base64') {
                         imageParts.push({
                             inlineData: {
-                                mimeType: item.source.media_type,
+                                mimeType: item.source.media_type || 'application/octet-stream',
                                 data: item.source.data
                             }
                         });
@@ -138,7 +149,7 @@ export function convertContentToParts(content, isClaudeModel = false, isGeminiMo
                     .filter(c => c.type === 'text')
                     .map(c => c.text)
                     .join('\n');
-                responseContent = { result: texts || (imageParts.length > 0 ? 'Image attached' : '') };
+                responseContent = { result: texts || (imageParts.length > 0 ? 'Image attached' : 'Success') };
             }
 
             const functionResponse = {
@@ -197,5 +208,9 @@ export function convertContentToParts(content, isClaudeModel = false, isGeminiMo
     // This ensures functionResponse parts are consecutive, which Claude's API requires
     parts.push(...deferredInlineData);
 
+    if (!parts || parts.length === 0) {
+        parts.push({ text: '.' });
+    }
     return parts;
 }
+

@@ -129,3 +129,4 @@ window.Components.logsViewer = () => ({
         URL.revokeObjectURL(url);
     }
 });
+

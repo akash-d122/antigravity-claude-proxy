@@ -33,9 +33,10 @@ export async function* streamSSEResponse(response, originalModel) {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -258,6 +259,9 @@ export async function* streamSSEResponse(response, originalModel) {
                 logger.warn('[CloudCode] SSE parse error:', parseError.message);
             }
         }
+        } // End of while loop
+    } finally {
+        reader.cancel().catch(() => {});
     }
 
     // Handle no content received - throw error to trigger retry in streaming-handler

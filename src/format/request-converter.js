@@ -39,8 +39,24 @@ export function convertAnthropicToGoogle(anthropicRequest) {
     // rejects them with "Extra inputs are not permitted". Clean them proactively here
     // before any other processing, following the pattern from Antigravity-Manager.
     const messages = cleanCacheControl(anthropicRequest.messages || []);
+    // Strip cache_control from system prompts if any
+    if (anthropicRequest.system && Array.isArray(anthropicRequest.system)) {
+        anthropicRequest.system = cleanCacheControl(anthropicRequest.system);
+    }
 
-    const { system, max_tokens, temperature, top_p, top_k, stop_sequences, tools, tool_choice, thinking } = anthropicRequest;
+    // Strip cache_control from tools if any
+    let tools = anthropicRequest.tools;
+    if (Array.isArray(tools)) {
+        tools = tools.map(tool => {
+            if (!tool) return tool;
+            const newTool = { ...tool };
+            if (newTool.cache_control !== undefined) {
+                delete newTool.cache_control;
+            }
+            return newTool;
+        });
+    }
+    const { system, max_tokens, temperature, top_p, top_k, stop_sequences, tool_choice, thinking } = anthropicRequest;
     const modelName = anthropicRequest.model || '';
     const modelFamily = getModelFamily(modelName);
     const isClaudeModel = modelFamily === 'claude';
@@ -129,11 +145,20 @@ export function convertAnthropicToGoogle(anthropicRequest) {
             parts.push({ text: '.' });
         }
 
-        const content = {
-            role: convertRole(msg.role),
-            parts: parts
-        };
-        googleRequest.contents.push(content);
+        const targetRole = convertRole(msg.role);
+        
+        // COLLAPSE CONSECUTIVE ROLES FOR GEMINI
+        // Gemini strictly requires alternating 'user' and 'model' roles.
+        // If the last added content has the same role, we must merge the parts.
+        const lastContent = googleRequest.contents[googleRequest.contents.length - 1];
+        if (lastContent && lastContent.role === targetRole) {
+            lastContent.parts.push(...parts);
+        } else {
+            googleRequest.contents.push({
+                role: targetRole,
+                parts: parts
+            });
+        }
     }
 
     // Filter unsigned thinking blocks for Claude models
@@ -166,23 +191,32 @@ export function convertAnthropicToGoogle(anthropicRequest) {
                 include_thoughts: true
             };
 
-            // Cloud Code API requires thinking_budget to actually produce thinking blocks.
-            // Without it, include_thoughts alone is ignored and Claude falls back to
-            // <thinking> XML tags in text. Default to 32000 when not provided (e.g. adaptive mode).
-            const thinkingBudget = thinking?.budget_tokens || 32000;
-            thinkingConfig.thinking_budget = thinkingBudget;
-            logger.debug(`[RequestConverter] Claude thinking enabled with budget: ${thinkingBudget}${!thinking?.budget_tokens ? ' (default)' : ''}`);
+            // Pass through thinking budget from Claude Code's adaptive mode.
+            // When thinking.type === 'auto' or budget_tokens is absent, let the API decide
+            // instead of forcing a fixed 32000 that wastes tokens on simple tasks
+            // and under-allocates on complex ones.
+            if (thinking?.budget_tokens) {
+                thinkingConfig.thinking_budget = thinking.budget_tokens;
+                logger.debug(`[RequestConverter] Claude thinking enabled with explicit budget: ${thinking.budget_tokens}`);
 
-            // Validate max_tokens > thinking_budget as required by the API
-            const currentMaxTokens = googleRequest.generationConfig.maxOutputTokens;
-            if (currentMaxTokens && currentMaxTokens <= thinkingBudget) {
-                const adjustedMaxTokens = thinkingBudget + 8192;
-                if (thinking?.budget_tokens) {
-                    logger.warn(`[RequestConverter] max_tokens (${currentMaxTokens}) <= thinking_budget (${thinkingBudget}). Adjusting to ${adjustedMaxTokens} to satisfy API requirements`);
-                } else {
-                    logger.debug(`[RequestConverter] Adjusting max_tokens to ${adjustedMaxTokens} for default thinking budget`);
+                // Validate max_tokens > thinking_budget as required by the API
+                const currentMaxTokens = googleRequest.generationConfig.maxOutputTokens;
+                if (currentMaxTokens && currentMaxTokens <= thinking.budget_tokens) {
+                    const adjustedMaxTokens = thinking.budget_tokens + 8192;
+                    logger.warn(`[RequestConverter] max_tokens (${currentMaxTokens}) <= thinking_budget (${thinking.budget_tokens}). Adjusting to ${adjustedMaxTokens}`);
+                    googleRequest.generationConfig.maxOutputTokens = adjustedMaxTokens;
                 }
-                googleRequest.generationConfig.maxOutputTokens = adjustedMaxTokens;
+            } else {
+                // Adaptive mode: set a reasonable default that the API requires
+                // but don't over-allocate. Use 16000 as a balanced default.
+                thinkingConfig.thinking_budget = 16000;
+                logger.debug(`[RequestConverter] Claude thinking enabled in adaptive mode (budget: 16000)`);
+
+                const currentMaxTokens = googleRequest.generationConfig.maxOutputTokens;
+                if (currentMaxTokens && currentMaxTokens <= 16000) {
+                    googleRequest.generationConfig.maxOutputTokens = 24192;
+                    logger.debug(`[RequestConverter] Adjusting max_tokens to 24192 for adaptive thinking`);
+                }
             }
 
             googleRequest.generationConfig.thinkingConfig = thinkingConfig;
@@ -245,6 +279,29 @@ export function convertAnthropicToGoogle(anthropicRequest) {
                 }
             };
         }
+
+        // Handle tool_choice mapping for all models
+        if (tool_choice) {
+            let callMode = 'VALIDATED'; // Default for Claude
+            let allowedNames = undefined;
+
+            if (tool_choice.type === 'auto') {
+                callMode = 'AUTO';
+            } else if (tool_choice.type === 'any') {
+                callMode = 'ANY';
+            } else if (tool_choice.type === 'tool' && tool_choice.name) {
+                callMode = 'ANY';
+                allowedNames = [tool_choice.name];
+            }
+
+            if (!googleRequest.toolConfig) {
+                googleRequest.toolConfig = { functionCallingConfig: {} };
+            }
+            googleRequest.toolConfig.functionCallingConfig.mode = callMode;
+            if (allowedNames) {
+                googleRequest.toolConfig.functionCallingConfig.allowedFunctionNames = allowedNames;
+            }
+        }
     }
 
     // Cap max tokens for Gemini models
@@ -263,3 +320,7 @@ export function convertAnthropicToGoogle(anthropicRequest) {
 
     return googleRequest;
 }
+
+
+
+

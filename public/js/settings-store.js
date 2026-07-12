@@ -31,15 +31,17 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        loadSettings() {
+                loadSettings() {
             const saved = localStorage.getItem('antigravity_settings');
             if (saved) {
                 const parsed = JSON.parse(saved);
                 Object.keys(parsed).forEach(k => {
-                    // Only load keys that exist in our default state (safety)
                     if (this.hasOwnProperty(k)) this[k] = parsed[k];
                 });
             }
+            // Force redactMode to false to ensure emails always show based on user request
+            this.redactMode = false;
+            this.saveSettings(true);
         },
 
         saveSettings(silent = false) {
@@ -74,3 +76,5 @@ document.addEventListener('alpine:init', () => {
         }
     });
 });
+
+

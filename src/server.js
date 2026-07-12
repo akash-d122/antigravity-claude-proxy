@@ -20,6 +20,7 @@ import { AccountManager } from './account-manager/index.js';
 import { clearThinkingSignatureCache } from './format/signature-cache.js';
 import { formatDuration } from './utils/helpers.js';
 import { logger } from './utils/logger.js';
+import { estimateTokens } from './utils/tokenizer.js';
 import usageStats from './modules/usage-stats.js';
 
 // Parse fallback flag directly from command line args to avoid circular dependency
@@ -88,6 +89,21 @@ app.use((req, res, next) => {
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
+app.use((err, req, res, next) => {
+    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+        logger.error(`[Server] JSON parsing error: ${err.message}`);
+        return res.status(400).send({ status: 400, message: err.message }); // Bad request
+    }
+    if (err.type === 'entity.too.large') {
+        logger.error(`[Server] Request body too large: ${err.message}`);
+        return res.status(413).send({ status: 413, message: 'Payload Too Large' });
+    }
+    if (err.message === 'request aborted') {
+        logger.error(`[Server] Request aborted by client`);
+        return res.status(400).send({ status: 400, message: 'Request aborted' });
+    }
+    next(err);
+});
 
 // Model ID normalization middleware (strips client-side context suffix like [1m] or [10m] and maps logical IDs to working backend IDs)
 app.use((req, res, next) => {
@@ -717,16 +733,56 @@ app.get('/v1/models', async (req, res) => {
 
 /**
  * Count tokens endpoint - Anthropic Messages API compatible
- * Uses local tokenization with official tokenizers (@anthropic-ai/tokenizer for Claude, @lenml/tokenizer-gemini for Gemini)
+ * Rough heuristic estimate so Claude Code can manage context windows properly.
+ * Uses ~4 chars per token approximation (conservative for English text + code).
  */
 app.post('/v1/messages/count_tokens', (req, res) => {
-    res.status(501).json({
-        type: 'error',
-        error: {
-            type: 'not_implemented',
-            message: 'Token counting is not implemented. Use /v1/messages with max_tokens or configure your client to skip token counting.'
+    try {
+        const { messages, system, tools } = req.body;
+        let totalChars = 0;
+
+        // Count system prompt chars
+        if (system) {
+            if (typeof system === 'string') {
+                totalChars += system.length;
+            } else if (Array.isArray(system)) {
+                for (const block of system) {
+                    if (block.text) totalChars += block.text.length;
+                }
+            }
         }
-    });
+
+        // Count message chars
+        if (messages && Array.isArray(messages)) {
+            for (const msg of messages) {
+                if (typeof msg.content === 'string') {
+                    totalChars += msg.content.length;
+                } else if (Array.isArray(msg.content)) {
+                    for (const block of msg.content) {
+                        if (block.text) totalChars += block.text.length;
+                        if (block.thinking) totalChars += block.thinking.length;
+                    }
+                }
+            }
+        }
+
+        // Count tool definition chars
+        if (tools && Array.isArray(tools)) {
+            totalChars += JSON.stringify(tools).length;
+        }
+
+        // ~4 chars per token is a conservative estimate for mixed code/English
+        const estimatedTokens = Math.ceil(totalChars / 4);
+
+        res.json({
+            input_tokens: estimatedTokens
+        });
+    } catch (error) {
+        // Fallback: return a safe estimate rather than erroring
+        res.json({
+            input_tokens: 1000
+        });
+    }
 });
 
 /**
@@ -766,8 +822,22 @@ function convertOpenAIToAnthropic(openaiRequest) {
         .map(m => {
             let role = m.role;
             if (role === 'model') role = 'assistant';
+            if (role === 'tool') role = 'user'; // Anthropic represents tool results as user messages
             
             let content = m.content;
+            
+            // Handle tool results
+            if (m.role === 'tool') {
+                return {
+                    role: 'user',
+                    content: [{
+                        type: 'tool_result',
+                        tool_use_id: m.tool_call_id,
+                        content: m.content || ''
+                    }]
+                };
+            }
+
             if (Array.isArray(content)) {
                 content = content.map(block => {
                     if (block.type === 'text') {
@@ -791,6 +861,30 @@ function convertOpenAIToAnthropic(openaiRequest) {
                     }
                     return block; // fallback
                 });
+            } else if (typeof content === 'string') {
+                content = [{ type: 'text', text: content }];
+            } else if (!content) {
+                content = []; // safe fallback for null content (e.g. tool-only calls)
+            }
+
+            // Map OpenAI tool_calls to Anthropic tool_use
+            if (m.tool_calls && Array.isArray(m.tool_calls)) {
+                const toolUses = m.tool_calls.map(tc => {
+                    let input = {};
+                    try { input = JSON.parse(tc.function.arguments); } catch(e) {}
+                    return {
+                        type: 'tool_use',
+                        id: tc.id,
+                        name: tc.function.name,
+                        input: input
+                    };
+                });
+                content.push(...toolUses);
+            }
+
+            // Fallback for strict API enforcement
+            if (content.length === 0) {
+                content.push({ type: 'text', text: '.' }); // Prevent empty parts
             }
 
             return { role, content };
@@ -1067,22 +1161,27 @@ app.post('/v1/chat/completions', async (req, res) => {
  */
 app.post('/v1/messages', async (req, res) => {
     try {
-        // Ensure account manager is initialized
-        await ensureInitialized();
+            // Ensure account manager is initialized
+            await ensureInitialized();
 
-        const {
-            model,
-            messages,
-            stream,
-            system,
-            max_tokens,
-            tools,
-            tool_choice,
-            thinking,
-            top_p,
-            top_k,
-            temperature
-        } = req.body;
+            const userAgent = req.headers['user-agent'] || req.headers['x-client-name'] || '';
+            const isClaudeCode = userAgent.toLowerCase().includes('claude-code') || userAgent.toLowerCase().includes('antigravity');
+            const isHermes = !isClaudeCode; // Assume non-Claude Code clients (like Hermes or SDKs) expect pristine behavior
+
+            const {
+                model,
+                    messages,
+                    stream,
+                    system,
+                    max_tokens,
+                    tools,
+                    tool_choice,
+                    thinking,
+                    top_p,
+                    top_k,
+                    temperature,
+                    assistantPrefill
+                } = req.body;
 
         // Resolve model mapping if configured
         let requestedModel = model || 'claude-3-5-sonnet-20241022';
@@ -1130,10 +1229,65 @@ app.post('/v1/messages', async (req, res) => {
             return res.json({});
         }
 
+        // Extract assistant prefill if present at the end of the messages array
+        let finalMessages = messages;
+        let finalAssistantPrefill = assistantPrefill;
+        
+        // Only extract Assistant Prefill for string manipulation if it's Claude Code
+        // Hermes relies on structural parsing which string prepending will break.
+        if (!isHermes && !finalAssistantPrefill && messages && messages.length > 0) {
+            const lastMsg = messages[messages.length - 1];
+            if (lastMsg && (lastMsg.role === 'assistant' || lastMsg.role === 'model')) {
+                if (typeof lastMsg.content === 'string') {
+                    finalAssistantPrefill = lastMsg.content;
+                    finalMessages = messages.slice(0, -1);
+                } else if (Array.isArray(lastMsg.content)) {
+                    const textBlock = lastMsg.content.find(block => block.type === 'text');
+                    if (textBlock && textBlock.text) {
+                        finalAssistantPrefill = textBlock.text;
+                        const otherBlocks = lastMsg.content.filter(block => block.type !== 'text');
+                        if (otherBlocks.length > 0) {
+                            const updatedLastMsg = { ...lastMsg, content: otherBlocks };
+                            finalMessages = [...messages.slice(0, -1), updatedLastMsg];
+                        } else {
+                            finalMessages = messages.slice(0, -1);
+                        }
+                    }
+                }
+            }
+        } else if (isHermes && !finalAssistantPrefill && messages && messages.length > 0) {
+            // For Hermes, if we detect a trailing assistant message, we must still pop it 
+            // to satisfy Gemini's strict role rules, but we DO NOT pass it as a finalAssistantPrefill string.
+            // Instead, we inject it as a strict prompt hint to the user message.
+            const lastMsg = messages[messages.length - 1];
+            if (lastMsg && (lastMsg.role === 'assistant' || lastMsg.role === 'model')) {
+                let prefillText = '';
+                if (typeof lastMsg.content === 'string') {
+                    prefillText = lastMsg.content;
+                } else if (Array.isArray(lastMsg.content)) {
+                    const textBlock = lastMsg.content.find(block => block.type === 'text');
+                    if (textBlock && textBlock.text) prefillText = textBlock.text;
+                }
+                
+                finalMessages = messages.slice(0, -1);
+                if (prefillText && finalMessages.length > 0) {
+                    const prevUserMsg = finalMessages[finalMessages.length - 1];
+                    if (prevUserMsg && prevUserMsg.role === 'user') {
+                        const hint = `\n\n[Assistant Prefill: Please begin your response EXACTLY with the following text. Do not output anything before it, just continue it:]\n${prefillText}`;
+                        if (typeof prevUserMsg.content === 'string') {
+                            prevUserMsg.content += hint;
+                        } else if (Array.isArray(prevUserMsg.content)) {
+                            prevUserMsg.content.push({ type: 'text', text: hint });
+                        }
+                    }
+                }
+            }
+        }
+
         // Build the request object
         const request = {
             model: modelId,
-            messages,
+            messages: finalMessages,
             max_tokens: max_tokens || 4096,
             stream,
             system,
@@ -1150,7 +1304,7 @@ app.post('/v1/messages', async (req, res) => {
         // Debug: Log message structure to diagnose tool_use/tool_result ordering
         if (logger.isDebugEnabled) {
             logger.debug('[API] Message structure:');
-            messages.forEach((msg, i) => {
+            finalMessages.forEach((msg, i) => {
                 const contentTypes = Array.isArray(msg.content)
                     ? msg.content.map(c => c.type || 'text').join(', ')
                     : (typeof msg.content === 'string' ? 'text' : 'unknown');
@@ -1165,7 +1319,7 @@ app.post('/v1/messages', async (req, res) => {
 
             try {
                 // Initialize the generator
-                const generator = sendMessageStream(request, accountManager, FALLBACK_ENABLED);
+                const generator = sendMessageStream(request, accountManager, FALLBACK_ENABLED, finalAssistantPrefill);
                 
                 // BUFFERING STRATEGY:
                 // Pull the first event *before* sending headers. 
@@ -1223,7 +1377,7 @@ app.post('/v1/messages', async (req, res) => {
 
         } else {
             // Handle non-streaming response
-            const response = await sendMessage(request, accountManager, FALLBACK_ENABLED);
+            const response = await sendMessage(request, accountManager, FALLBACK_ENABLED, finalAssistantPrefill);
             res.json(response);
         }
 
@@ -1287,3 +1441,6 @@ app.use('*', (req, res) => {
 });
 
 export default app;
+
+
+
