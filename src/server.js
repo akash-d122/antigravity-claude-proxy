@@ -766,8 +766,22 @@ function convertOpenAIToAnthropic(openaiRequest) {
         .map(m => {
             let role = m.role;
             if (role === 'model') role = 'assistant';
+            if (role === 'tool') role = 'user'; // Anthropic represents tool results as user messages
             
             let content = m.content;
+            
+            // Handle tool results
+            if (m.role === 'tool') {
+                return {
+                    role: 'user',
+                    content: [{
+                        type: 'tool_result',
+                        tool_use_id: m.tool_call_id,
+                        content: m.content || ''
+                    }]
+                };
+            }
+
             if (Array.isArray(content)) {
                 content = content.map(block => {
                     if (block.type === 'text') {
@@ -791,6 +805,30 @@ function convertOpenAIToAnthropic(openaiRequest) {
                     }
                     return block; // fallback
                 });
+            } else if (typeof content === 'string') {
+                content = [{ type: 'text', text: content }];
+            } else if (!content) {
+                content = []; // safe fallback for null content (e.g. tool-only calls)
+            }
+
+            // Map OpenAI tool_calls to Anthropic tool_use
+            if (m.tool_calls && Array.isArray(m.tool_calls)) {
+                const toolUses = m.tool_calls.map(tc => {
+                    let input = {};
+                    try { input = JSON.parse(tc.function.arguments); } catch(e) {}
+                    return {
+                        type: 'tool_use',
+                        id: tc.id,
+                        name: tc.function.name,
+                        input: input
+                    };
+                });
+                content.push(...toolUses);
+            }
+
+            // Fallback for strict API enforcement
+            if (content.length === 0) {
+                content.push({ type: 'text', text: '.' }); // Prevent empty parts
             }
 
             return { role, content };

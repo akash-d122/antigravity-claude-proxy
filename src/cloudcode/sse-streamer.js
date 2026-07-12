@@ -79,7 +79,7 @@ export async function* streamSSEResponse(response, originalModel) {
                             stop_reason: null,
                             stop_sequence: null,
                             usage: {
-                                input_tokens: inputTokens - cacheReadTokens,
+                                input_tokens: Math.max(0, inputTokens - cacheReadTokens),
                                 output_tokens: 0,
                                 cache_read_input_tokens: cacheReadTokens,
                                 cache_creation_input_tokens: 0

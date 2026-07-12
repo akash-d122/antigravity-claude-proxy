@@ -254,7 +254,13 @@ function flattenAnyOfOneOf(schema) {
                                 ? `${parentDescription} (${value})`
                                 : value;
                         }
-                    } else if (!(key in result) || key === 'type' || key === 'properties' || key === 'items') {
+                    } else if (key === 'required') {
+                        const parentRequired = Array.isArray(result.required) ? result.required : [];
+                        const childRequired = Array.isArray(value) ? value : [];
+                        result.required = [...new Set([...parentRequired, ...childRequired])];
+                    } else if (key === 'properties') {
+                        result.properties = { ...(result.properties || {}), ...value };
+                    } else if (!(key in result) || key === 'type' || key === 'items') {
                         result[key] = value;
                     }
                 }
@@ -510,7 +516,11 @@ export function sanitizeSchema(schema) {
         'required',
         'items',
         'enum',
-        'title'
+        'title',
+        'anyOf',
+        'oneOf',
+        'allOf',
+        '$ref'
     ]);
 
     const sanitized = {};

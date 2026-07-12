@@ -245,6 +245,29 @@ export function convertAnthropicToGoogle(anthropicRequest) {
                 }
             };
         }
+
+        // Handle tool_choice mapping for all models
+        if (tool_choice) {
+            let callMode = 'VALIDATED'; // Default for Claude
+            let allowedNames = undefined;
+
+            if (tool_choice.type === 'auto') {
+                callMode = 'AUTO';
+            } else if (tool_choice.type === 'any') {
+                callMode = 'ANY';
+            } else if (tool_choice.type === 'tool' && tool_choice.name) {
+                callMode = 'ANY';
+                allowedNames = [tool_choice.name];
+            }
+
+            if (!googleRequest.toolConfig) {
+                googleRequest.toolConfig = { functionCallingConfig: {} };
+            }
+            googleRequest.toolConfig.functionCallingConfig.mode = callMode;
+            if (allowedNames) {
+                googleRequest.toolConfig.functionCallingConfig.allowedFunctionNames = allowedNames;
+            }
+        }
     }
 
     // Cap max tokens for Gemini models

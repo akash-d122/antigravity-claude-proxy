@@ -111,7 +111,7 @@ export function convertGoogleToAnthropic(googleResponse, model) {
         stop_reason: stopReason,
         stop_sequence: null,
         usage: {
-            input_tokens: promptTokens - cachedTokens,
+            input_tokens: Math.max(0, promptTokens - cachedTokens),
             output_tokens: usageMetadata.candidatesTokenCount || 0,
             cache_read_input_tokens: cachedTokens,
             cache_creation_input_tokens: 0
