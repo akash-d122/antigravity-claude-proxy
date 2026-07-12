@@ -494,7 +494,7 @@ function flattenTypeArrays(schema, nullableProps = null, currentPropName = null)
  * Generates placeholder schema for empty tool schemas.
  */
 export function sanitizeSchema(schema) {
-    if (!schema || typeof schema !== 'object') {
+    if (!schema || typeof schema !== 'object' || Object.keys(schema).length === 0) {
         // Empty/missing schema - generate placeholder with reason property
         return {
             type: 'object',
@@ -540,7 +540,20 @@ export function sanitizeSchema(schema) {
         if (key === 'properties' && value && typeof value === 'object') {
             sanitized.properties = {};
             for (const [propKey, propValue] of Object.entries(value)) {
-                sanitized.properties[propKey] = sanitizeSchema(propValue);
+                // Ensure we don't recurse on empty sub-schemas turning into placeholders
+                if (propValue && typeof propValue === 'object' && Object.keys(propValue).length === 0) {
+                    sanitized.properties[propKey] = { type: 'string' }; // Fallback for pure empty
+                } else if (propValue && typeof propValue === 'object' && propValue.type !== 'object' && !propValue.properties) {
+                     // If it has NO 'properties' block, do NOT run it through the placeholder generation
+                     sanitized.properties[propKey] = sanitizeSchema({ ...propValue, type: propValue.type || 'string' });
+                     // After sanitize, explicitly clear any placeholder 'reason' property that might have generated
+                     if (sanitized.properties[propKey].properties && sanitized.properties[propKey].properties.reason) {
+                          delete sanitized.properties[propKey].properties;
+                          delete sanitized.properties[propKey].required;
+                     }
+                } else {
+                    sanitized.properties[propKey] = sanitizeSchema(propValue);
+                }
             }
         } else if (key === 'items' && value && typeof value === 'object') {
             if (Array.isArray(value)) {
@@ -548,8 +561,15 @@ export function sanitizeSchema(schema) {
             } else {
                 sanitized.items = sanitizeSchema(value);
             }
+        } else if (['anyOf', 'oneOf', 'allOf'].includes(key) && Array.isArray(value)) {
+            sanitized[key] = value.map(item => sanitizeSchema(item));
         } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-            sanitized[key] = sanitizeSchema(value);
+            // Only recurse on objects if they actually have content, otherwise keep as is
+            if (Object.keys(value).length === 0) {
+                sanitized[key] = value;
+            } else {
+                sanitized[key] = sanitizeSchema(value);
+            }
         } else {
             sanitized[key] = value;
         }
@@ -560,15 +580,16 @@ export function sanitizeSchema(schema) {
         sanitized.type = 'object';
     }
 
-    // If object type with no properties, add placeholder
+    // If object type with no properties, add placeholder (but ONLY at the root/tool level, skip if inside properties)
+    // Cloud Code validation error fix: only objects can have properties
     if (sanitized.type === 'object' && (!sanitized.properties || Object.keys(sanitized.properties).length === 0)) {
-        sanitized.properties = {
-            reason: {
-                type: 'string',
-                description: 'Reason for calling this tool'
-            }
-        };
-        sanitized.required = ['reason'];
+        // Just convert it to a string if it's deeply nested without properties,
+        // unless it explicitly must be an object
+        if (!sanitized.type) {
+            sanitized.type = 'string';
+        } else {
+             // Leave it empty; Google API allows empty objects, it just forbids properties/required on NON-object types.
+        }
     }
 
     return sanitized;
@@ -649,6 +670,11 @@ export function cleanSchema(schema) {
 
     // Phase 4: Final cleanup - recursively clean nested schemas and validate required
     if (result.properties && typeof result.properties === 'object') {
+        // Enforce type=object if properties are present (Google API requirement)
+        if (result.type && result.type.toUpperCase() !== 'OBJECT') {
+            result.type = 'OBJECT';
+        }
+        
         const newProps = {};
         for (const [key, value] of Object.entries(result.properties)) {
             newProps[key] = cleanSchema(value);
@@ -665,11 +691,18 @@ export function cleanSchema(schema) {
     }
 
     // Validate that required array only contains properties that exist
-    if (result.required && Array.isArray(result.required) && result.properties) {
-        const definedProps = new Set(Object.keys(result.properties));
-        result.required = result.required.filter(prop => definedProps.has(prop));
-        if (result.required.length === 0) {
+    if (result.required && Array.isArray(result.required)) {
+        // Enforce type=object if required is present (Google API requirement)
+        if (result.type && result.type.toUpperCase() !== 'OBJECT') {
             delete result.required;
+        } else if (result.properties) {
+            const definedProps = new Set(Object.keys(result.properties));
+            result.required = result.required.filter(prop => definedProps.has(prop));
+            if (result.required.length === 0) {
+                delete result.required;
+            }
+        } else {
+            delete result.required; // Cannot have required without properties
         }
     }
 
