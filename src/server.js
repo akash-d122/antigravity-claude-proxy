@@ -741,9 +741,7 @@ function convertOpenAIToAnthropic(openaiRequest) {
         stream,
         temperature,
         top_p,
-        top_k,
-        tools,
-        tool_choice
+        top_k
     } = openaiRequest;
 
     // 1. Extract system messages
@@ -856,34 +854,6 @@ function convertOpenAIToAnthropic(openaiRequest) {
         anthropicRequest.top_k = top_k;
     }
 
-    if (tools && Array.isArray(tools)) {
-        anthropicRequest.tools = tools.map((t, idx) => {
-            if (t.type === 'function' && t.function) {
-                return {
-                    name: t.function.name,
-                    description: t.function.description || '',
-                    input_schema: t.function.parameters || { type: 'object' }
-                };
-            }
-            return t;
-        });
-    }
-
-    if (tool_choice) {
-        if (typeof tool_choice === 'string') {
-            if (tool_choice === 'auto' || tool_choice === 'required') {
-                anthropicRequest.tool_choice = { type: tool_choice === 'required' ? 'any' : 'auto' };
-            }
-        } else if (typeof tool_choice === 'object') {
-            if (tool_choice.type === 'function' && tool_choice.function?.name) {
-                anthropicRequest.tool_choice = {
-                    type: 'tool',
-                    name: tool_choice.function.name
-                };
-            }
-        }
-    }
-
     return anthropicRequest;
 }
 
@@ -917,18 +887,6 @@ app.post('/v1/chat/completions', async (req, res) => {
             const targetModel = modelMapping[requestedModel].mapping;
             logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
             requestedModel = targetModel;
-        } else if (requestedModel.startsWith('claude-opus-')) {
-            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-opus-20240229`);
-            requestedModel = 'claude-3-opus-20240229';
-        } else if (requestedModel.startsWith('claude-sonnet-')) {
-            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-5-sonnet-20241022`);
-            requestedModel = 'claude-3-5-sonnet-20241022';
-        } else if (requestedModel.startsWith('claude-haiku-')) {
-            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-haiku-20240307`);
-            requestedModel = 'claude-3-haiku-20240307';
-        } else if (requestedModel.startsWith('claude-fable-')) {
-            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-5-sonnet-20241022`);
-            requestedModel = 'claude-3-5-sonnet-20241022';
         }
 
         const modelId = requestedModel;
@@ -1002,34 +960,11 @@ app.post('/v1/chat/completions', async (req, res) => {
                     if (event.type === 'message_start' && event.message) {
                         if (event.message.id) messageId = event.message.id;
                         if (event.message.model) modelName = event.message.model;
-                    } else if (event.type === 'content_block_start' && event.content_block) {
-                        if (event.content_block.type === 'tool_use') {
-                            sendOpenAIChunk({
-                                tool_calls: [{
-                                    index: event.index || 0,
-                                    id: event.content_block.id,
-                                    type: 'function',
-                                    function: {
-                                        name: event.content_block.name,
-                                        arguments: ''
-                                    }
-                                }]
-                            });
-                        }
                     } else if (event.type === 'content_block_delta' && event.delta) {
                         if (event.delta.type === 'text_delta') {
                             sendOpenAIChunk({ content: event.delta.text });
                         } else if (event.delta.type === 'thinking_delta') {
                             sendOpenAIChunk({ reasoning_content: event.delta.thinking });
-                        } else if (event.delta.type === 'input_json_delta') {
-                            sendOpenAIChunk({
-                                tool_calls: [{
-                                    index: event.index || 0,
-                                    function: {
-                                        arguments: event.delta.partial_json
-                                    }
-                                }]
-                            });
                         }
                     }
                 }
@@ -1039,34 +974,11 @@ app.post('/v1/chat/completions', async (req, res) => {
                     if (event.type === 'message_start' && event.message) {
                         if (event.message.id) messageId = event.message.id;
                         if (event.message.model) modelName = event.message.model;
-                    } else if (event.type === 'content_block_start' && event.content_block) {
-                        if (event.content_block.type === 'tool_use') {
-                            sendOpenAIChunk({
-                                tool_calls: [{
-                                    index: event.index || 0,
-                                    id: event.content_block.id,
-                                    type: 'function',
-                                    function: {
-                                        name: event.content_block.name,
-                                        arguments: ''
-                                    }
-                                }]
-                            });
-                        }
                     } else if (event.type === 'content_block_delta' && event.delta) {
                         if (event.delta.type === 'text_delta') {
                             sendOpenAIChunk({ content: event.delta.text });
                         } else if (event.delta.type === 'thinking_delta') {
                             sendOpenAIChunk({ reasoning_content: event.delta.thinking });
-                        } else if (event.delta.type === 'input_json_delta') {
-                            sendOpenAIChunk({
-                                tool_calls: [{
-                                    index: event.index || 0,
-                                    function: {
-                                        arguments: event.delta.partial_json
-                                    }
-                                }]
-                            });
                         }
                     } else if (event.type === 'message_delta' && event.delta) {
                         const finishReason = mapStopReason(event.delta.stop_reason);
@@ -1112,22 +1024,12 @@ app.post('/v1/chat/completions', async (req, res) => {
             
             let textContent = '';
             let reasoningContent = '';
-            const toolCalls = [];
             if (Array.isArray(response.content)) {
                 for (const block of response.content) {
                     if (block.type === 'text') {
                         textContent += block.text;
                     } else if (block.type === 'thinking' || block.thinking) {
                         reasoningContent += block.thinking || block.text || '';
-                    } else if (block.type === 'tool_use') {
-                        toolCalls.push({
-                            id: block.id,
-                            type: 'function',
-                            function: {
-                                name: block.name,
-                                arguments: typeof block.input === 'object' ? JSON.stringify(block.input) : (block.input || '{}')
-                            }
-                        });
                     }
                 }
             } else if (typeof response.content === 'string') {
@@ -1143,9 +1045,8 @@ app.post('/v1/chat/completions', async (req, res) => {
                     index: 0,
                     message: {
                         role: 'assistant',
-                        content: textContent || null,
-                        ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
-                        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {})
+                        content: textContent,
+                        ...(reasoningContent ? { reasoning_content: reasoningContent } : {})
                     },
                     finish_reason: mapStopReason(response.stop_reason)
                 }],
@@ -1228,18 +1129,6 @@ app.post('/v1/messages', async (req, res) => {
             const targetModel = modelMapping[requestedModel].mapping;
             logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
             requestedModel = targetModel;
-        } else if (requestedModel.startsWith('claude-opus-')) {
-            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-opus-20240229`);
-            requestedModel = 'claude-3-opus-20240229';
-        } else if (requestedModel.startsWith('claude-sonnet-')) {
-            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-5-sonnet-20241022`);
-            requestedModel = 'claude-3-5-sonnet-20241022';
-        } else if (requestedModel.startsWith('claude-haiku-')) {
-            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-haiku-20240307`);
-            requestedModel = 'claude-3-haiku-20240307';
-        } else if (requestedModel.startsWith('claude-fable-')) {
-            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-5-sonnet-20241022`);
-            requestedModel = 'claude-3-5-sonnet-20241022';
         }
 
         const modelId = requestedModel;
