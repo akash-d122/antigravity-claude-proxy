@@ -917,6 +917,18 @@ app.post('/v1/chat/completions', async (req, res) => {
             const targetModel = modelMapping[requestedModel].mapping;
             logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
             requestedModel = targetModel;
+        } else if (requestedModel.startsWith('claude-opus-')) {
+            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-opus-20240229`);
+            requestedModel = 'claude-3-opus-20240229';
+        } else if (requestedModel.startsWith('claude-sonnet-')) {
+            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-5-sonnet-20241022`);
+            requestedModel = 'claude-3-5-sonnet-20241022';
+        } else if (requestedModel.startsWith('claude-haiku-')) {
+            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-haiku-20240307`);
+            requestedModel = 'claude-3-haiku-20240307';
+        } else if (requestedModel.startsWith('claude-fable-')) {
+            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-5-sonnet-20241022`);
+            requestedModel = 'claude-3-5-sonnet-20241022';
         }
 
         const modelId = requestedModel;
@@ -1216,6 +1228,18 @@ app.post('/v1/messages', async (req, res) => {
             const targetModel = modelMapping[requestedModel].mapping;
             logger.info(`[Server] Mapping model ${requestedModel} -> ${targetModel}`);
             requestedModel = targetModel;
+        } else if (requestedModel.startsWith('claude-opus-')) {
+            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-opus-20240229`);
+            requestedModel = 'claude-3-opus-20240229';
+        } else if (requestedModel.startsWith('claude-sonnet-')) {
+            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-5-sonnet-20241022`);
+            requestedModel = 'claude-3-5-sonnet-20241022';
+        } else if (requestedModel.startsWith('claude-haiku-')) {
+            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-haiku-20240307`);
+            requestedModel = 'claude-3-haiku-20240307';
+        } else if (requestedModel.startsWith('claude-fable-')) {
+            logger.info(`[Server] Auto-mapping model ${requestedModel} -> claude-3-5-sonnet-20241022`);
+            requestedModel = 'claude-3-5-sonnet-20241022';
         }
 
         const modelId = requestedModel;
